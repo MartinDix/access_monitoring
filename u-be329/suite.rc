@@ -1,0 +1,139 @@
+#!jinja2
+
+[cylc]
+    UTC mode = True
+    # Set this so it runs at the correct time offset whenever started
+    cycle point format = "%Y%m%d"
+    [[events]]
+        timeout handler = rose suite-hook --shutdown
+        timeout = P1D
+
+[scheduling]
+    initial cycle point = now
+    final cycle point = 20240101
+    runahead limit = PT0H 
+
+    [[special tasks]]
+        clock-trigger = post_process(PT18H)
+    [[dependencies]]
+        [[[P1D]]]
+            graph = """
+              post_process => coupled_update => plot => housekeep
+            """
+[runtime]
+    [[root]]
+        script = rose task-run --verbose
+        [[[events]]]
+            submission timeout = PT1H
+            execution timeout  = PT6H
+
+    [[NCI]]
+        [[[job]]]
+            batch system = pbs
+            execution time limit = PT30M
+            submission retry delays = PT1M, PT5M, 3*PT15M
+        [[[remote]]]
+            host = gadi
+        [[[directives]]]
+            -l ncpus=1
+            -l mem = 4gb
+            -l jobfs = 2gb
+            # Need ik11 for mask file
+            -l storage = gdata/p66+gdata/hh5+gdata/access+gdata/ik11
+            -q = express
+
+    [[post_process]]
+        inherit = NCI
+        pre-script = """
+            module unload python
+            module use /g/data3/hh5/public/modules
+            module load conda/analysis3
+            module load parallel
+        """
+	script = """
+{%- for RUN in ACTIVE_RUNS %}
+            um2netcdf.sh {{RUN}}
+{% endfor %}
+        """
+        [[[job]]]
+            execution retry delays = 2*PT10M
+            execution time limit = PT2H
+
+    [[coupled_update]]
+        inherit = NCI
+        pre-script = """
+            module unload python
+            module use /g/data3/hh5/public/modules
+            module load conda/analysis3
+        """
+	script = """
+{%- for RUN in ACTIVE_RUNS %}
+            coupled_update.sh {{RUN}}
+{% endfor %}
+        """
+        [[[job]]]
+	    # May get failures when mppcombine is running
+            execution retry delays = 2*PT10M
+            execution time limit = PT2H
+
+    [[timing]]
+	script = """
+{%- for RUN in ACTIVE_RUNS %}
+            cylc report-timings -r u-{{RUN}} | grep coupled > /g/data/p66/mrd599/access-cm2/timing.{{RUN}}
+{% endfor %}
+        """
+        [[[job]]]
+	    batch system = background
+        [[[remote]]]
+            host = localhost
+
+    [[plot]]
+        inherit = NCI
+        pre-script = """
+            module unload python
+            module use /g/data3/hh5/public/modules
+            module load conda/analysis3
+        """
+        script = """
+            python ~mrd599/src/python/access/throughput.py --savefig {%- for RUN in ACTIVE_RUNS %} {{RUN}} {% endfor %}
+            python ~mrd599/src/python/access/access_webstats.py --minyr=2015 --maxyr=2100 --savefig --savedir=/g/data/p66/accessdev-web/mrd599/access-cm2/ssp_extra cu874 cu873 cu872 cu834 cu924 cu926 cu929
+        """
+            # python ~mrd599/src/python/access/access_webstats_025_control.py --minyr=1 --maxyr=600 --savefig --savedir=/g/data/p66/accessdev-web/mrd599/access-cm2/control025
+            # python ~mrd599/src/python/access/salinity_series.py --maxyr=600 --savefig --savedir=/g/data/p66/accessdev-web/mrd599/access-cm2/control025
+            # python ~mrd599/src/python/access/access_webstats.py --minyr=1850 --maxyr=2015 --savefig \
+            #    --savedir=/g/data/p66/accessdev-web/mrd599/access-cm2/historical \
+            #    --fade bj594  bl655 bm652 cd659 cd884 \
+            #    -- bi889 bj594 bl655 bm652 cd659 cd884 cj368 cj454 cj590 cm302 cm303
+            # python ~mrd599/src/python/access/access_webstats.py --modelyears --minyr=1 --maxyr=1600 --savefig --savedir=/g/data/p66/accessdev-web/mrd599/access-cm2/control PIspinup bz687 cj879
+            # python ~mrd599/src/python/access/access_webstats.py --modelyears --minyr=1000 --maxyr=1100 --savefig --savedir=/g/data/p66/accessdev-web/mrd599/access-cm2/stochastic bz687 cj878A cj878B cj878C
+            # python ~mrd599/src/python/access/access_webstats.py --minyr=2015 --maxyr=2100 --savefig --savedir=/g/data/p66/accessdev-web/mrd599/access-cm2/ssp  bi889 bk786 bm038 bk882 bl686 ce576
+            # SSP extensions
+            # python ~mrd599/src/python/access/access_webstats_cmip6.py --minyr=2000 --maxyr=2300 --savefig --savedir=/g/data/p66/accessdev-web/mrd599/access-cm2/cmip6_ext bk786 bl686 bz683 bz734
+            # python ~mrd599/src/python/access/access_webstats_cmip6.py --minyr=1850 --maxyr=2020 --savefig --savedir=/g/data/p66/accessdev-web/mrd599/access-cm2/historical bi889 bj594 bl655 bm652 bu010 bu839 bu840 bw966 bx128 bx129 by350 by438 by563
+            # python ~mrd599/src/python/access/access_webstats_cmip6.py --minyr=1850 --maxyr=2050 --savefig --savedir=/g/data/p66/accessdev-web/mrd599/access-cm2/picontrol bi889 bm135
+            # python ~mrd599/src/python/access/access_webstats_cmip6.py --minyr=1850 --maxyr=2100 --savefig bi889 bj594 bl655 bm652 bk786 bk882 bl686 bm038
+            # python ~mrd599/src/python/access/access_webstats_cmip6.py --minyr=1950 --maxyr=2100 --savefig \
+              # --savedir=/g/data/p66/accessdev-web/mrd599/access-cm2/cmip6_all {%- for RUN in RUNS %} {{RUN}} {% endfor %}
+
+# 	script = """
+#            # python ~mrd599/src/python/access/access_webstats.py
+#            # Versions with and without idealised runs
+#            python ~mrd599/src/python/access/access_webstats_cmip6.py --minyr=1850 --maxyr=2100 --savefig bi889 bj594 bl655 bm652 bk786 bk882 bl686 bm038
+#            python ~mrd599/src/python/access/access_webstats_cmip6.py --minyr=1850 --maxyr=2350 --savefig \
+#              --savedir=/g/data/p66/accessdev-web/mrd599/access-cm2/cmip6_all {%- for RUN in RUNS %} {{RUN}} {% endfor %}
+#            python ~mrd599/src/python/access/throughput.py --savefig {%- for RUN in ACTIVE_RUNS %} {{RUN}} {% endfor %}
+# {%- for RUN in ACTIVE_RUNS %}
+#            # python ~mrd599/src/python/access/plot_runtime.py --savefig /g/data/p66/mrd599/access-cm2/timing.{{RUN}}
+# {% endfor %}
+#         """
+        [[[job]]]
+            execution time limit = PT60M
+        [[[environment]]]
+# Required for running without DISPLAY
+            MPLBACKEND="agg"
+        [[[directives]]]
+            -l mem = 16gb
+
+     [[housekeep]]
+        [[[job]]]
+            batch system = background
